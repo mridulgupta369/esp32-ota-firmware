@@ -49,8 +49,10 @@
  *      with a FIRMWARE_VERSION <= the number in version.txt, the new image also
  *      sees remote > local and re-flashes FOREVER. Bump BOTH together.
  *
- *  (D) FAILURE BACKOFF: after a failed download we reset the check timer, skip
- *      re-downloading that exact failed version, and grow the interval to a cap.
+ *  (D) FAILURE BACKOFF (retry, don't give up): after a failed download we KEEP
+ *      retrying the SAME version on a growing backoff (30s -> 1m -> 2m -> ... ->
+ *      5m cap). A transient weak-link failure self-heals with NO power cycle; a
+ *      genuinely broken binary is retried only every 5 min, never hammered.
  *
  * Build/publish notes are at the bottom of this file.
  * ============================================================================
@@ -64,7 +66,7 @@
 
 // ===================== COMPILE-TIME CONFIG =====================
 // *** BUMP THIS for each published build, and set version.txt to the SAME int. ***
-#define FIRMWARE_VERSION 3
+#define FIRMWARE_VERSION 4
 
 // WiFi credentials live in NVS (see provisioning notes in the header). They are
 // loaded into these at boot; never hard-coded.
@@ -116,7 +118,8 @@ static uint32_t wifiAttemptStartMs = 0;
 static uint32_t lastWifiRetryMs    = 0;
 static bool     blinkPhase         = false;
 static bool     wifiStarted        = false;
-static int      lastFailedRemote   = -1;   // remote version that failed to flash; skip it
+static int      otaFailVersion     = -1;   // version currently being retried (backoff/logging)
+static int      otaFailCount       = 0;    // consecutive failed download attempts for it
 
 // ============================================================
 //  LED HELPERS  (neopixelWrite is the core builtin; 0-255 values)
@@ -523,21 +526,29 @@ void loop() {
             Serial.printf("[OTA] Remote %d <= local %d -> no update.\n",
                           remote, FIRMWARE_VERSION);
             otaCheckIntervalMs = OTA_CHECK_INTERVAL_MS;     // healthy; reset backoff
-          } else if (remote == lastFailedRemote) {
-            // We already tried this exact remote version and it failed to flash.
-            // Don't re-download it every cycle (avoids retry storm on a weak link).
-            Serial.printf("[OTA] Remote %d already failed; skipping (backoff).\n", remote);
+            otaFailVersion     = -1;                        // clear retry history
+            otaFailCount       = 0;
           } else {
-            // --- THE critical gate: strictly greater AND not a known-bad version ---
+            // remote > local: a newer version exists -> try to install it.
+            // We do NOT give up after one failure. We keep retrying the SAME
+            // version on a growing backoff (30s -> 1m -> 2m -> ... -> 5m cap), so a
+            // transient weak-link failure self-heals with NO power cycle, while a
+            // genuinely broken binary is retried only every 5 min (never hammered).
+            if (remote != otaFailVersion) {   // a new target version -> fresh budget
+              otaFailVersion     = remote;
+              otaFailCount       = 0;
+              otaCheckIntervalMs = OTA_CHECK_INTERVAL_MS;
+            }
+            Serial.printf("[OTA] Newer version %d available (attempt %d). Trying...\n",
+                          remote, otaFailCount + 1);
             bool flashed = performOtaUpdate(remote);  // blocks; reboots on success
             if (!flashed) {
-              lastFailedRemote = remote;              // remember & skip next time
-              otaCheckIntervalMs = (otaCheckIntervalMs < OTA_CHECK_BACKOFF_MAX_MS)
-                                     ? (otaCheckIntervalMs * 2) : OTA_CHECK_BACKOFF_MAX_MS;
+              otaFailCount++;
+              otaCheckIntervalMs *= 2;                          // grow backoff...
               if (otaCheckIntervalMs > OTA_CHECK_BACKOFF_MAX_MS)
-                otaCheckIntervalMs = OTA_CHECK_BACKOFF_MAX_MS;
-              Serial.printf("[OTA] Update failed; next check in %lu ms.\n",
-                            (unsigned long)otaCheckIntervalMs);
+                otaCheckIntervalMs = OTA_CHECK_BACKOFF_MAX_MS;  // ...capped at 5 min
+              Serial.printf("[OTA] Download failed (attempt %d). RETRYING version %d in %lu ms.\n",
+                            otaFailCount, remote, (unsigned long)otaCheckIntervalMs);
             }
             state = ST_ONLINE;
             lastOtaCheckMs = millis();   // don't let the blocking DL eat the interval

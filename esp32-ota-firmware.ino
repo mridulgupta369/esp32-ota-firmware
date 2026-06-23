@@ -64,7 +64,7 @@
 
 // ===================== COMPILE-TIME CONFIG =====================
 // *** BUMP THIS for each published build, and set version.txt to the SAME int. ***
-#define FIRMWARE_VERSION 2
+#define FIRMWARE_VERSION 3
 
 // WiFi credentials live in NVS (see provisioning notes in the header). They are
 // loaded into these at boot; never hard-coded.

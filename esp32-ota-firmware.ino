@@ -64,7 +64,7 @@
 
 // ===================== COMPILE-TIME CONFIG =====================
 // *** BUMP THIS for each published build, and set version.txt to the SAME int. ***
-#define FIRMWARE_VERSION 1
+#define FIRMWARE_VERSION 2
 
 // WiFi credentials live in NVS (see provisioning notes in the header). They are
 // loaded into these at boot; never hard-coded.
@@ -291,7 +291,11 @@ static bool fetchRemoteVersion(int& out) {
   https.setReuse(false);
   https.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS); // Fastly/GitHub may 302
 
-  if (!https.begin(client, VERSION_URL)) {
+  // Cache-buster: raw.githubusercontent.com (Fastly) caches by full URL incl.
+  // query string. A unique ?t= each fetch bypasses any stale 200/404 cache, so
+  // we always see the latest version.txt the instant it's pushed.
+  String vurl = String(VERSION_URL) + "?t=" + String(millis());
+  if (!https.begin(client, vurl)) {
     Serial.println("[VER] https.begin() failed -> no update.");
     return false;
   }
@@ -392,7 +396,10 @@ static bool performOtaUpdate(int remote) {
   });
   httpUpdate.onError([](int err) { Serial.printf("[OTA] onError code=%d\n", err); });
 
-  t_httpUpdate_return ret = httpUpdate.update(client, FIRMWARE_URL);
+  // Cache-buster (same reason as the version fetch): always pull the freshly
+  // published binary, never a stale CDN copy -- avoids flashing an old image.
+  String furl = String(FIRMWARE_URL) + "?t=" + String(millis());
+  t_httpUpdate_return ret = httpUpdate.update(client, furl);
 
   switch (ret) {
     case HTTP_UPDATE_OK:

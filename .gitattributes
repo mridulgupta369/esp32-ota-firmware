@@ -1,0 +1,4 @@
+# Never apply end-of-line conversion to the firmware image — it must be byte-exact
+# or OTA flashing will fail / brick. Treat all .bin as binary.
+*.bin binary
+firmware.bin -text -diff
